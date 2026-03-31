@@ -67,6 +67,7 @@ export default function TaskCard({ task, members, onDeleted, onClick }: Props) {
                 border: '1px solid rgba(255,255,255,0.05)',
                 cursor: 'pointer',
                 position: 'relative',
+                zIndex: menuOpen ? 50 : 'auto',
             }}
         >
             {/* Priority bar */}

@@ -25,7 +25,6 @@ export default function Board() {
   const [createColumn, setCreateColumn] = useState<Task['estado']>('Pendiente')
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
-  const [activeCol, setActiveCol] = useState<Task['estado']>('Pendiente')
 
   // Real-time loading
   const fetchAll = useCallback(async () => {
@@ -122,7 +121,7 @@ export default function Board() {
       <header style={{
         background: '#17212b', borderBottom: '1px solid rgba(0,0,0,0.3)',
         padding: '0 24px', position: 'sticky', top: 0, zIndex: 50,
-        height: '56px', display: 'flex', alignItems: 'center', gap: '16px',
+        minHeight: '56px', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap',
         boxShadow: '0 2px 16px rgba(0,0,0,0.3)',
       }}>
         {/* Logo */}
@@ -139,8 +138,8 @@ export default function Board() {
           </div>
         </div>
 
-        {/* Search — hidden on mobile */}
-        <div className="header-search" style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '8px', maxWidth: '520px' }}>
+        {/* Search */}
+        <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', minWidth: 'min-content' }}>
           <div style={{ position: 'relative', flex: 1 }}>
             <span style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#708499', fontSize: '14px' }}>🔍</span>
             <input
@@ -243,8 +242,8 @@ export default function Board() {
         </div>
       </header>
 
-      {/* Stats bar — hidden on mobile */}
-      <div className="header-stats" style={{ padding: '12px 24px', display: 'flex', gap: '12px', alignItems: 'center', background: '#0e1621', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+      {/* Stats bar */}
+      <div className="stats-bar" style={{ padding: '12px 24px', display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'center', background: '#0e1621', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
         {COLUMNAS.map(col => {
           const count = tasks.filter(t => t.estado === col).length
           return (
@@ -265,39 +264,15 @@ export default function Board() {
         )}
       </div>
 
-      {/* Mobile column tabs */}
-      <div className="mobile-col-tabs">
-        {COLUMNAS.map(col => {
-          const count = filtered.filter(t => t.estado === col).length
-          const cfg = COLUMN_CONFIG[col]
-          return (
-            <button key={col} onClick={() => setActiveCol(col)} style={{
-              padding: '6px 14px', borderRadius: '999px', border: 'none', cursor: 'pointer',
-              background: activeCol === col ? cfg.color + '22' : '#242f3d',
-              color: activeCol === col ? cfg.color : '#708499',
-              fontSize: '12px', fontWeight: activeCol === col ? 700 : 500,
-              outline: activeCol === col ? `1px solid ${cfg.color}55` : '1px solid transparent',
-              whiteSpace: 'nowrap', transition: 'all 0.15s', flexShrink: 0,
-            }}>
-              {cfg.emoji} {col} <span style={{ marginLeft: '4px', opacity: 0.7 }}>{count}</span>
-            </button>
-          )
-        })}
-      </div>
-
       {/* Board */}
-      <div style={{ flex: 1, padding: '20px 24px', overflowX: 'auto' }}>
+      <div className="board-container" style={{ flex: 1, padding: '20px 24px', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
         <DragDropContext onDragEnd={onDragEnd}>
-          <div className="board-columns" style={{ display: 'flex', gap: '16px', minWidth: 'max-content', alignItems: 'flex-start' }}>
-            {COLUMNAS.filter(col => {
-              // On mobile only show the active column; on desktop show all
-              if (typeof window !== 'undefined' && window.innerWidth <= 768) return col === activeCol
-              return true
-            }).map(col => {
+          <div style={{ display: 'flex', gap: '16px', minWidth: 'max-content', alignItems: 'flex-start' }}>
+            {COLUMNAS.map(col => {
               const colTasks = filtered.filter(t => t.estado === col)
               const cfg = COLUMN_CONFIG[col]
               return (
-                <div key={col} style={{ width: '296px', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+                <div key={col} className="board-column" style={{ width: '296px', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
                   {/* Column header */}
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px', padding: '0 4px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>

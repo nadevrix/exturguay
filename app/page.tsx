@@ -1,155 +1,377 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
+import { DragDropContext, Droppable, Draggable, type DropResult } from '@hello-pangea/dnd'
 import { supabase } from '../lib/supabase'
-import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd'
+import { useAuth } from '../lib/auth/AuthProvider'
+import type { Task, Profile, Tag } from '../lib/types'
+import { COLUMNAS, COLUMN_CONFIG } from '../lib/types'
+import TaskCard from '../components/TaskCard'
+import CreateTaskModal from '../components/CreateTaskModal'
+import TaskDetailPanel from '../components/TaskDetailPanel'
+import MemberAvatar from '../components/MemberAvatar'
+import LoginPage from './login/page'
+import toast from 'react-hot-toast'
 
-type Tarea = {
-  id: string; titulo: string; pre_descripcion: string;
-  estado: string; prioridad: string; posicion: number;
-  encargado: string; // Nueva: 'R', 'A', 'J' (por ejemplo)
-}
+export default function Board() {
+  const { member, loading, signOut } = useAuth()
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [members, setMembers] = useState<Profile[]>([])
+  const [tags, setTags] = useState<Tag[]>([])
+  const [search, setSearch] = useState('')
+  const [filterPriority, setFilterPriority] = useState<string>('')
+  const [filterMember, setFilterMember] = useState<string>('')
+  const [showCreate, setShowCreate] = useState(false)
+  const [createColumn, setCreateColumn] = useState<Task['estado']>('Pendiente')
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null)
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
 
-export default function Home() {
-  const [tareas, setTareas] = useState<Tarea[]>([])
-
-  useEffect(() => {
-    fetchTareas()
-    const channel = supabase.channel('telegram-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tareas' }, () => fetchTareas())
-      .subscribe()
-    return () => { supabase.removeChannel(channel) }
+  // Real-time loading
+  const fetchAll = useCallback(async () => {
+    const [{ data: tasksData }, { data: membersData }, { data: tagsData }] = await Promise.all([
+      supabase.from('tasks').select('*, assignee:profiles(*), tags:task_tags(tag:tags(*))').order('posicion', { ascending: true }),
+      supabase.from('profiles').select('*').order('display_name'),
+      supabase.from('tags').select('*').order('name'),
+    ])
+    if (tasksData) {
+      // Flatten tags from task_tags join
+      const normalized = tasksData.map((t: Record<string, unknown>) => ({
+        ...t,
+        tags: ((t.tags as { tag: Tag }[]) ?? []).map((tt) => tt.tag).filter(Boolean),
+      }))
+      setTasks(normalized as Task[])
+    }
+    if (membersData) setMembers(membersData as Profile[])
+    if (tagsData) setTags(tagsData as Tag[])
   }, [])
 
-  const fetchTareas = async () => {
-    const { data } = await supabase.from('tareas').select('*').order('posicion', { ascending: true })
-    if (data) setTareas(data)
-  }
+  useEffect(() => {
+    if (!member) return
+    fetchAll()
+    // Real-time subscription
+    const channel = supabase.channel('board-sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'task_tags' }, fetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, fetchAll)
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [member, fetchAll])
 
-  const onDragEnd = async (result: any) => {
-    const { destination, source, draggableId } = result;
-    if (!destination) return;
-    if (destination.droppableId === source.droppableId && destination.index === source.index) return;
+  const onDragEnd = async (result: DropResult) => {
+    const { destination, source, draggableId } = result
+    if (!destination) return
+    if (destination.droppableId === source.droppableId && destination.index === source.index) return
 
-    const tareasEnColumna = tareas.filter(t => t.estado === destination.droppableId);
-    let nuevaPosicion: number;
+    const destColumn = destination.droppableId as Task['estado']
+    const tasksInDest = tasks.filter(t => t.estado === destColumn).sort((a, b) => a.posicion - b.posicion)
 
-    if (tareasEnColumna.length === 0) {
-      nuevaPosicion = 1000;
-    } else if (destination.index === 0) {
-      nuevaPosicion = tareasEnColumna[0].posicion / 2;
-    } else if (destination.index === tareasEnColumna.length) {
-      nuevaPosicion = tareasEnColumna[tareasEnColumna.length - 1].posicion + 1000;
-    } else {
-      const prev = tareasEnColumna[destination.index - 1].posicion;
-      const next = tareasEnColumna[destination.index].posicion;
-      nuevaPosicion = (prev + next) / 2;
+    let newPos: number
+    if (tasksInDest.length === 0) newPos = 1000
+    else if (destination.index === 0) newPos = tasksInDest[0].posicion / 2
+    else if (destination.index >= tasksInDest.length) newPos = tasksInDest[tasksInDest.length - 1].posicion + 1000
+    else newPos = (tasksInDest[destination.index - 1].posicion + tasksInDest[destination.index].posicion) / 2
+
+    const updated = tasks.map(t =>
+      t.id === draggableId ? { ...t, estado: destColumn, posicion: newPos } : t
+    ).sort((a, b) => a.posicion - b.posicion)
+    setTasks(updated)
+
+    await supabase.from('tasks').update({ estado: destColumn, posicion: newPos }).eq('id', draggableId)
+    if (destination.droppableId !== source.droppableId) {
+      if (member?.id) {
+        await supabase.from('activity_log').insert([{
+          task_id: draggableId, actor_id: member.id, action: 'moved',
+          payload: { from: source.droppableId, to: destColumn },
+        }])
+      }
+      toast.success(`Movido a ${destColumn}`)
     }
-
-    const nuevasTareas = Array.from(tareas);
-    const index = nuevasTareas.findIndex(t => t.id === draggableId);
-    nuevasTareas[index] = { ...nuevasTareas[index], estado: destination.droppableId, posicion: nuevaPosicion };
-    setTareas(nuevasTareas.sort((a, b) => a.posicion - b.posicion));
-
-    await supabase.from('tareas')
-      .update({ estado: destination.droppableId, posicion: nuevaPosicion })
-      .eq('id', draggableId);
-  };
-
-  const columnas = ['Pendiente', 'En Progreso', 'Revisión', 'Terminado']
-
-  // Colores de avatares estilo Telegram
-  const getAvatarColor = (char: string) => {
-    const colors: { [key: string]: string } = {
-      'R': 'bg-orange-500',
-      'K': 'bg-green-500',
-      'A': 'bg-blue-400'
-    };
-    return colors[char] || 'bg-purple-500';
   }
+
+  // Filtering
+  const filtered = tasks.filter(t => {
+    const q = search.toLowerCase()
+    const matchSearch = !q || t.title.toLowerCase().includes(q)
+      || t.pre_description?.toLowerCase().includes(q)
+      || t.tags?.some(tag => tag.name.toLowerCase().includes(q))
+    const matchPriority = !filterPriority || t.prioridad === filterPriority
+    const matchMember = !filterMember || t.assignee_id === filterMember
+    return matchSearch && matchPriority && matchMember
+  })
+
+  if (loading) return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0e1621' }}>
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: 'linear-gradient(135deg, #3390ec, #1a6dbf)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px', margin: '0 auto 16px', animation: 'pulse-glow 2s infinite' }}>E</div>
+        <p style={{ color: '#708499', fontSize: '14px' }}>Cargando Exturguay...</p>
+      </div>
+    </div>
+  )
+
+  if (!member) return <LoginPage />
 
   return (
-    <main className="min-h-screen bg-[#0e1621] text-[#f5f5f5] font-sans">
-      {/* Barra Superior estilo Telegram */}
-      <header className="bg-[#17212b] border-b border-black/20 p-4 sticky top-0 z-10 shadow-md">
-        <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-[#3390ec] rounded-full flex items-center justify-center font-bold text-lg shadow-inner">
-              E
-            </div>
-            <div>
-              <h1 className="font-bold text-sm">Exturguay Official</h1>
-              <p className="text-[#4ea4f5] text-xs">3 miembros, online</p>
+    <div style={{ minHeight: '100vh', background: '#0e1621', display: 'flex', flexDirection: 'column' }}>
+      {/* Header */}
+      <header style={{
+        background: '#17212b', borderBottom: '1px solid rgba(0,0,0,0.3)',
+        padding: '0 24px', position: 'sticky', top: 0, zIndex: 50,
+        height: '56px', display: 'flex', alignItems: 'center', gap: '16px',
+        boxShadow: '0 2px 16px rgba(0,0,0,0.3)',
+      }}>
+        {/* Logo */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginRight: '8px' }}>
+          <div style={{
+            width: '36px', height: '36px', borderRadius: '50%',
+            background: 'linear-gradient(135deg, #3390ec, #1a6dbf)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontWeight: 700, fontSize: '16px', boxShadow: '0 4px 12px rgba(51,144,236,0.3)',
+          }}>E</div>
+          <div>
+            <h1 style={{ margin: 0, fontSize: '15px', fontWeight: 700, lineHeight: 1.2 }}>Exturguay</h1>
+            <p style={{ margin: 0, fontSize: '11px', color: '#4ea4f5', lineHeight: 1 }}>{tasks.length} tareas activas</p>
+          </div>
+        </div>
+
+        {/* Search */}
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '8px', maxWidth: '520px' }}>
+          <div style={{ position: 'relative', flex: 1 }}>
+            <span style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#708499', fontSize: '14px' }}>🔍</span>
+            <input
+              value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Buscar tareas, etiquetas..."
+              style={{
+                width: '100%', background: '#242f3d', border: '1px solid rgba(255,255,255,0.07)',
+                borderRadius: '10px', padding: '7px 12px 7px 34px', color: '#f5f5f5', fontSize: '13px',
+              }}
+            />
+            {search && (
+              <button onClick={() => setSearch('')} style={{
+                position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)',
+                background: 'none', border: 'none', color: '#708499', cursor: 'pointer', fontSize: '14px',
+              }}>×</button>
+            )}
+          </div>
+
+          {/* Filter by priority */}
+          <select value={filterPriority} onChange={e => setFilterPriority(e.target.value)} style={{
+            background: '#242f3d', border: '1px solid rgba(255,255,255,0.07)',
+            borderRadius: '10px', padding: '7px 10px', color: filterPriority ? '#3390ec' : '#708499',
+            fontSize: '12px', cursor: 'pointer', colorScheme: 'dark',
+          }}>
+            <option value="">Prioridad</option>
+            <option value="Crítica">🔴 Crítica</option>
+            <option value="Alta">🟠 Alta</option>
+            <option value="Media">🟡 Media</option>
+            <option value="Baja">🔵 Baja</option>
+          </select>
+
+          {/* Filter by member */}
+          <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+            {members.slice(0, 5).map(m => (
+              <div key={m.id} onClick={() => setFilterMember(f => f === m.id ? '' : m.id)} style={{ cursor: 'pointer', opacity: filterMember && filterMember !== m.id ? 0.4 : 1, transition: 'opacity 0.15s' }}>
+                <MemberAvatar profile={m} size={28} showTooltip selected={filterMember === m.id} />
+              </div>
+            ))}
+          </div>
+
+          {(search || filterPriority || filterMember) && (
+            <button onClick={() => { setSearch(''); setFilterPriority(''); setFilterMember('') }} style={{
+              padding: '4px 10px', borderRadius: '8px', border: '1px solid rgba(255,75,75,0.3)',
+              background: 'rgba(255,75,75,0.1)', color: '#ff7070', cursor: 'pointer', fontSize: '11px',
+            }}>
+              ✕ Limpiar
+            </button>
+          )}
+        </div>
+
+        {/* Spacer */}
+        <div style={{ flex: 1 }} />
+
+        {/* Add button */}
+        <button
+          onClick={() => { setCreateColumn('Pendiente'); setShowCreate(true) }}
+          className="btn-primary"
+          style={{ padding: '8px 18px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}
+        >
+          <span style={{ fontSize: '16px', lineHeight: 1 }}>+</span> Nueva Tarea
+        </button>
+
+        {/* User menu */}
+        <div style={{ position: 'relative' }}>
+          <div onClick={() => setUserMenuOpen(v => !v)} style={{ cursor: 'pointer' }}>
+            <div style={{
+              width: '34px', height: '34px', borderRadius: '50%',
+              background: member.avatar_color,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: '13px', fontWeight: 700, color: '#fff',
+            }}>
+              {member.avatar_initials}
             </div>
           </div>
-          <input
-            className="bg-[#242f3d] border-none rounded-2xl px-4 py-2 text-xs w-64 outline-none placeholder-[#708499] focus:ring-1 focus:ring-[#3390ec]"
-            placeholder="Escribe una tarea..."
-            onKeyDown={async (e) => {
-              if (e.key === 'Enter' && e.currentTarget.value) {
-                const val = e.currentTarget.value;
-                e.currentTarget.value = '';
-                await supabase.from('tareas').insert([{
-                  titulo: val,
-                  estado: 'Pendiente',
-                  posicion: Date.now(),
-                  encargado: 'K' // Por defecto para Kadriser
-                }]);
-              }
-            }}
-          />
+          {userMenuOpen && (
+            <div className="animate-scaleIn" style={{
+              position: 'absolute', right: 0, top: '44px', zIndex: 100,
+              background: '#17212b', border: '1px solid rgba(255,255,255,0.1)',
+              borderRadius: '14px', padding: '8px', minWidth: '200px',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+            }}>
+              <div style={{ padding: '10px 14px 14px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                <p style={{ margin: 0, fontWeight: 600, fontSize: '14px' }}>{member.display_name}</p>
+                <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#708499' }}>@{member.username}</p>
+              </div>
+              <button onClick={async () => { setUserMenuOpen(false); await signOut(); toast('Sesión cerrada 👋') }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px',
+                  borderRadius: '9px', border: 'none', background: 'none',
+                  color: '#ff6b6b', fontSize: '13px', cursor: 'pointer', width: '100%', textAlign: 'left',
+                  marginTop: '4px', transition: 'background 0.12s',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,75,75,0.1)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'none')}
+              >
+                🚪 Cerrar Sesión
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
-      <div className="p-6 overflow-x-auto">
+      {/* Stats bar */}
+      <div style={{ padding: '12px 24px', display: 'flex', gap: '12px', alignItems: 'center', background: '#0e1621', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+        {COLUMNAS.map(col => {
+          const count = tasks.filter(t => t.estado === col).length
+          return (
+            <div key={col} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 12px', background: '#17212b', borderRadius: '999px', border: '1px solid rgba(255,255,255,0.05)' }}>
+              <span style={{ fontSize: '12px' }}>{COLUMN_CONFIG[col].emoji}</span>
+              <span style={{ fontSize: '12px', color: '#708499' }}>{col}</span>
+              <span style={{
+                fontSize: '11px', fontWeight: 700, color: '#f5f5f5',
+                background: '#242f3d', borderRadius: '999px', padding: '0 6px', minWidth: '18px', textAlign: 'center',
+              }}>{count}</span>
+            </div>
+          )
+        })}
+        {(search || filterPriority || filterMember) && (
+          <span style={{ fontSize: '12px', color: '#3390ec', marginLeft: '4px' }}>
+            🔍 {filtered.length} resultado{filtered.length !== 1 ? 's' : ''}
+          </span>
+        )}
+      </div>
+
+      {/* Board */}
+      <div style={{ flex: 1, padding: '20px 24px', overflowX: 'auto' }}>
         <DragDropContext onDragEnd={onDragEnd}>
-          <div className="flex gap-4 min-w-max">
-            {columnas.map(colId => (
-              <Droppable key={colId} droppableId={colId}>
-                {(provided) => (
-                  <div
-                    {...provided.droppableProps}
-                    ref={provided.innerRef}
-                    className="w-72 flex flex-col gap-3"
-                  >
-                    <h2 className="text-[#4ea4f5] text-xs font-bold uppercase tracking-wider px-2 mb-1">
-                      {colId}
-                    </h2>
-
-                    <div className="flex flex-col gap-2 min-h-[70vh] bg-[#17212b]/50 p-2 rounded-xl border border-white/5">
-                      {tareas.filter(t => t.estado === colId).map((tarea, index) => (
-                        <Draggable key={tarea.id} draggableId={tarea.id} index={index}>
-                          {(provided) => (
-                            <div
-                              ref={provided.innerRef}
-                              {...provided.draggableProps}
-                              {...provided.dragHandleProps}
-                              className="bg-[#242f3d] p-3 rounded-xl shadow-sm hover:bg-[#2b394a] transition-colors border border-transparent active:border-[#3390ec]/30 group"
-                            >
-                              <div className="flex justify-between items-start gap-2">
-                                <span className="text-[13px] leading-tight flex-1">{tarea.titulo}</span>
-                                <div className={`w-6 h-6 rounded-full ${getAvatarColor(tarea.encargado)} flex items-center justify-center text-[10px] font-bold`}>
-                                  {tarea.encargado}
-                                </div>
-                              </div>
-
-                              <div className="flex justify-between items-center mt-3">
-                                <span className="text-[10px] text-[#708499]">17:21 ✓✓</span>
-                                <div className={`h-1.5 w-1.5 rounded-full ${tarea.prioridad === 'Alta' ? 'bg-red-400' : 'bg-[#3390ec]'}`} />
-                              </div>
-                            </div>
-                          )}
-                        </Draggable>
-                      ))}
-                      {provided.placeholder}
+          <div style={{ display: 'flex', gap: '16px', minWidth: 'max-content', alignItems: 'flex-start' }}>
+            {COLUMNAS.map(col => {
+              const colTasks = filtered.filter(t => t.estado === col)
+              const cfg = COLUMN_CONFIG[col]
+              return (
+                <div key={col} style={{ width: '296px', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+                  {/* Column header */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px', padding: '0 4px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '14px' }}>{cfg.emoji}</span>
+                      <span style={{ fontSize: '13px', fontWeight: 600, color: cfg.color, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{cfg.label}</span>
+                      <span style={{
+                        background: '#17212b', color: '#708499', fontSize: '11px', fontWeight: 700,
+                        borderRadius: '999px', padding: '0 7px', border: '1px solid rgba(255,255,255,0.06)',
+                      }}>{colTasks.length}</span>
                     </div>
+                    <button
+                      onClick={() => { setCreateColumn(col); setShowCreate(true) }}
+                      style={{
+                        background: 'none', border: 'none', color: '#708499', cursor: 'pointer',
+                        fontSize: '18px', lineHeight: 1, borderRadius: '6px', padding: '2px 6px',
+                        transition: 'color 0.15s',
+                      }}
+                      title="Agregar tarea"
+                      onMouseEnter={e => (e.currentTarget.style.color = '#3390ec')}
+                      onMouseLeave={e => (e.currentTarget.style.color = '#708499')}
+                    >
+                      +
+                    </button>
                   </div>
-                )}
-              </Droppable>
-            ))}
+
+                  {/* Droppable */}
+                  <Droppable droppableId={col}>
+                    {(provided, snapshot) => (
+                      <div
+                        ref={provided.innerRef}
+                        {...provided.droppableProps}
+                        style={{
+                          minHeight: '72px', padding: '8px',
+                          background: snapshot.isDraggingOver ? 'rgba(51,144,236,0.07)' : '#17212b22',
+                          borderRadius: '16px',
+                          border: snapshot.isDraggingOver ? '1px solid rgba(51,144,236,0.25)' : '1px solid rgba(255,255,255,0.04)',
+                          transition: 'all 0.2s',
+                          display: 'flex', flexDirection: 'column', gap: '8px',
+                        }}
+                      >
+                        {colTasks.map((task, index) => (
+                          <Draggable key={task.id} draggableId={task.id} index={index}>
+                            {(provided, snapshot) => (
+                              <div
+                                ref={provided.innerRef}
+                                {...provided.draggableProps}
+                                {...provided.dragHandleProps}
+                                style={{
+                                  ...provided.draggableProps.style,
+                                  transform: snapshot.isDragging
+                                    ? `${provided.draggableProps.style?.transform} rotate(1.5deg)`
+                                    : provided.draggableProps.style?.transform,
+                                }}
+                                className={snapshot.isDragging ? 'task-card dragging' : ''}
+                              >
+                                <TaskCard
+                                  task={task}
+                                  members={members}
+                                  onDeleted={fetchAll}
+                                  onClick={() => setSelectedTask(task)}
+                                />
+                              </div>
+                            )}
+                          </Draggable>
+                        ))}
+                        {provided.placeholder}
+                        {colTasks.length === 0 && !snapshot.isDraggingOver && (
+                          <div style={{ textAlign: 'center', padding: '20px 16px', color: '#708499', fontSize: '12px' }}>
+                            <div style={{ fontSize: '24px', marginBottom: '8px', opacity: 0.5 }}>
+                              {col === 'Terminado' ? '🎉' : '📋'}
+                            </div>
+                            {col === 'Terminado' ? 'Sin tareas terminadas aún' : 'Sin tareas aquí'}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </Droppable>
+                </div>
+              )
+            })}
           </div>
         </DragDropContext>
       </div>
-    </main>
+
+      {/* Modals */}
+      {showCreate && (
+        <CreateTaskModal
+          initialColumn={createColumn}
+          members={members}
+          tags={tags}
+          onClose={() => setShowCreate(false)}
+          onCreated={fetchAll}
+        />
+      )}
+
+      {selectedTask && (
+        <TaskDetailPanel
+          task={tasks.find(t => t.id === selectedTask.id) ?? selectedTask}
+          members={members}
+          tags={tags}
+          onClose={() => setSelectedTask(null)}
+          onUpdated={fetchAll}
+        />
+      )}
+    </div>
   )
 }

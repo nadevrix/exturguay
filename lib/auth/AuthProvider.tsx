@@ -32,7 +32,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, [])
 
     const signIn = (password: string, memberId: string): { error: string | null } => {
-        const correct = process.env.NEXT_PUBLIC_APP_PASSWORD
+        const correct = process.env.NEXT_PUBLIC_TEAM_KEY
         if (password !== correct) return { error: 'Contraseña incorrecta' }
         const found = TEAM_MEMBERS.find(m => m.id === memberId)
         if (!found) return { error: 'Selecciona un miembro del equipo' }

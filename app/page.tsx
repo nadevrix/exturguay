@@ -28,21 +28,26 @@ export default function Board() {
 
   // Real-time loading
   const fetchAll = useCallback(async () => {
-    const [{ data: tasksData }, { data: membersData }, { data: tagsData }] = await Promise.all([
-      supabase.from('tasks').select('*, assignee:profiles(*), tags:task_tags(tag:tags(*))').order('posicion', { ascending: true }),
+    const [tasksRes, membersRes, tagsRes] = await Promise.all([
+      supabase.from('tasks').select('*, tags:task_tags(tag:tags(*))').order('posicion', { ascending: true }),
       supabase.from('profiles').select('*').order('display_name'),
       supabase.from('tags').select('*').order('name'),
     ])
-    if (tasksData) {
-      // Flatten tags from task_tags join
-      const normalized = tasksData.map((t: Record<string, unknown>) => ({
+
+    // Mostrar errores de Supabase en pantalla para diagnosticar RLS/FK
+    if (tasksRes.error) { toast.error(`Tasks: ${tasksRes.error.message}`); return }
+    if (membersRes.error) { toast.error(`Profiles: ${membersRes.error.message}`); }
+    if (tagsRes.error) { toast.error(`Tags: ${tagsRes.error.message}`); }
+
+    if (tasksRes.data) {
+      const normalized = tasksRes.data.map((t: Record<string, unknown>) => ({
         ...t,
         tags: ((t.tags as { tag: Tag }[]) ?? []).map((tt) => tt.tag).filter(Boolean),
       }))
       setTasks(normalized as Task[])
     }
-    if (membersData) setMembers(membersData as Profile[])
-    if (tagsData) setTags(tagsData as Tag[])
+    if (membersRes.data) setMembers(membersRes.data as Profile[])
+    if (tagsRes.data) setTags(tagsRes.data as Tag[])
   }, [])
 
   useEffect(() => {

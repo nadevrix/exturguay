@@ -65,7 +65,6 @@ export default function TaskCard({ task, members, onDeleted, onClick }: Props) {
                 background: '#242f3d',
                 borderRadius: '14px',
                 border: '1px solid rgba(255,255,255,0.05)',
-                overflow: 'hidden',
                 cursor: 'pointer',
                 position: 'relative',
             }}
